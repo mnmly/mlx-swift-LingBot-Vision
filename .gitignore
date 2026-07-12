@@ -1,0 +1,12 @@
+.xcdd/
+.build/
+*.dSYM/
+.DS_Store
+
+default.profraw
+
+xcuserdata/
+
+/docs/
+.xcdd-app/
+.xcdd-docs/

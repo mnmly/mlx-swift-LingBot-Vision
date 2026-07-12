@@ -1,0 +1,12 @@
+MLXLingBotVision
+Copyright 2026 Hiroaki Yamane
+
+This product includes software derived from LingBot-Vision
+(https://github.com/robbyant/lingbot-vision), Copyright the LingBot-Vision
+authors (Ant Group), licensed under the Apache License, Version 2.0.
+
+The LingBot-Vision project acknowledges DINOv2 and DINOv3 for their
+contributions to self-supervised learning.
+
+This is an unofficial port and is not affiliated with or endorsed by the
+original authors.
