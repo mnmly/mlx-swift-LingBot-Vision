@@ -20,12 +20,21 @@ final class DemoModel {
     var useFloat16 = true
     var imageSize = defaultImageSize
 
+    /// Fraction (0…1) downloaded while pulling weights from Hugging Face.
+    var downloadProgress: Double = 0
+    var isDownloading = false
+
     /// Cached session, reused across runs while the model folder + dtype are
     /// unchanged (avoids reloading ~1 GB of weights on every Run).
     private var session: LingBotVisionSession?
     private var sessionKey: String?
 
-    var canRun: Bool { modelDirectory != nil && imageURL != nil && !isRunning }
+    var canRun: Bool { modelDirectory != nil && imageURL != nil && !isRunning && !isDownloading }
+
+    /// Hugging Face repo holding the converted MLX weights, and the two files
+    /// the Swift loader needs from it.
+    static let hubRepo = "mnmly/lingbot-vision-vit-large-mlx"
+    private static let hubFiles = ["config.json", "model.safetensors"]
 
     func setModelDirectory(_ url: URL) {
         modelDirectory = url
@@ -40,6 +49,59 @@ final class DemoModel {
         status = inputImage == nil
             ? "Could not read \(url.lastPathComponent)"
             : "Image: \(url.lastPathComponent)"
+    }
+
+    /// Download the published MLX weights from Hugging Face into a subfolder of
+    /// `parentDir`, then select that folder as the active model.
+    ///
+    /// `parentDir` must come from a file dialog (e.g. defaulting to
+    /// `~/.cache/huggingface`): the App Sandbox only grants write access to a
+    /// user-picked location, so the picker is what makes the download possible.
+    func downloadFromHub(into parentDir: URL) {
+        guard !isDownloading, !isRunning else { return }
+        isDownloading = true
+        downloadProgress = 0
+        status = "Downloading model from Hugging Face…"
+
+        let repo = Self.hubRepo
+        let files = Self.hubFiles
+
+        // Outer Task inherits @MainActor, so the writes to `self` after the
+        // await are race-free. The network + disk I/O runs in a detached task
+        // that captures only Sendable values (the URL and this Sendable actor).
+        Task {
+            do {
+                let modelDir = try await Task.detached { () -> URL in
+                    let scoped = parentDir.startAccessingSecurityScopedResource()
+                    defer { if scoped { parentDir.stopAccessingSecurityScopedResource() } }
+
+                    let dir = parentDir.appendingPathComponent(
+                        "lingbot-vision-vit-large-mlx", isDirectory: true)
+                    try FileManager.default.createDirectory(
+                        at: dir, withIntermediateDirectories: true)
+
+                    let base = "https://huggingface.co/\(repo)/resolve/main/"
+                    for name in files {
+                        guard let url = URL(string: base + name) else { throw URLError(.badURL) }
+                        // config.json is tiny; drive the progress bar off the
+                        // large model.safetensors only.
+                        let reportsProgress = (name == "model.safetensors")
+                        try await downloadFile(from: url, to: dir.appendingPathComponent(name)) { frac in
+                            if reportsProgress {
+                                Task { @MainActor in self.downloadProgress = frac }
+                            }
+                        }
+                    }
+                    return dir
+                }.value
+
+                setModelDirectory(modelDir)
+                status = "Downloaded — ready. Choose an image and Run."
+            } catch {
+                status = "Download failed: \(error.localizedDescription)"
+            }
+            isDownloading = false
+        }
     }
 
     func run() {
@@ -122,4 +184,48 @@ private struct InferResult: @unchecked Sendable {
     let session: LingBotVisionSession
     let image: CGImage
     let milliseconds: Double
+}
+
+/// Download `url` to `dest`, reporting fractional progress. Uses a download
+/// task (streamed to a temp file, no in-memory buffering) so the ~1 GB
+/// `model.safetensors` never has to fit in RAM.
+private func downloadFile(
+    from url: URL, to dest: URL,
+    onProgress: @escaping @Sendable (Double) -> Void
+) async throws {
+    let delegate = DownloadProgress(onProgress)
+    let (tempURL, response) = try await URLSession.shared.download(
+        for: URLRequest(url: url), delegate: delegate)
+    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+        throw URLError(.badServerResponse)
+    }
+    try? FileManager.default.removeItem(at: dest)
+    try FileManager.default.moveItem(at: tempURL, to: dest)
+}
+
+/// Task-scoped delegate that forwards download progress. `@unchecked Sendable`:
+/// its only stored property is an immutable `@Sendable` closure, and URLSession
+/// delivers the callback on its own serial delegate queue.
+private final class DownloadProgress: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let onProgress: @Sendable (Double) -> Void
+
+    init(_ onProgress: @escaping @Sendable (Double) -> Void) {
+        self.onProgress = onProgress
+    }
+
+    func urlSession(
+        _ session: URLSession, downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+        onProgress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+    }
+
+    // Required by the protocol; the async `download(for:)` returns the file URL,
+    // so nothing to do here.
+    func urlSession(
+        _ session: URLSession, downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {}
 }

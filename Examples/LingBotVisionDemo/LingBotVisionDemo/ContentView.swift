@@ -1,5 +1,11 @@
 import SwiftUI
 import UniformTypeIdentifiers
+#if canImport(AppKit)
+import AppKit
+#endif
+#if canImport(Darwin)
+import Darwin
+#endif
 
 @main
 struct LingBotVisionDemoApp: App {
@@ -21,6 +27,13 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 14) {
             controls
+            if model.isDownloading {
+                ProgressView(value: model.downloadProgress) {
+                    Text("Downloading weights… \(Int(model.downloadProgress * 100))%")
+                        .font(.caption)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
             HStack(spacing: 14) {
                 pane(model.inputImage, label: "Input")
                 pane(model.pcaImage, label: "Patch PCA")
@@ -43,6 +56,10 @@ struct ContentView: View {
     private var controls: some View {
         HStack(spacing: 10) {
             Button("Model Folder…") { showModelPicker = true }
+            #if os(macOS)
+            Button("Download from HF…") { chooseDownloadFolderAndDownload() }
+                .disabled(model.isDownloading || model.isRunning)
+            #endif
             Button("Image…") { showImagePicker = true }
             Toggle("float16", isOn: $model.useFloat16)
                 .toggleStyle(.switch)
@@ -84,4 +101,36 @@ struct ContentView: View {
             .frame(width: 320, height: 320)
         }
     }
+
+    #if os(macOS)
+    /// Present a folder picker (defaulting to the real `~/.cache/huggingface`)
+    /// and download the weights into the chosen folder. The picker is required:
+    /// the App Sandbox only grants write access to a user-selected location.
+    private func chooseDownloadFolderAndDownload() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Download Here"
+        panel.message = "Choose a folder to save the model (e.g. ~/.cache/huggingface)."
+        let cache = realHomeDirectory().appendingPathComponent(".cache/huggingface", isDirectory: true)
+        if FileManager.default.fileExists(atPath: cache.path) {
+            panel.directoryURL = cache
+        }
+        if panel.runModal() == .OK, let url = panel.url {
+            model.downloadFromHub(into: url)
+        }
+    }
+
+    /// The user's real home directory. Under the App Sandbox,
+    /// `FileManager.homeDirectoryForCurrentUser` returns the container path,
+    /// but `getpwuid` still reports the true home — so the picker can default to
+    /// the standard Hugging Face cache outside the container.
+    private func realHomeDirectory() -> URL {
+        if let pw = getpwuid(getuid()), let home = pw.pointee.pw_dir {
+            return URL(fileURLWithPath: String(cString: home))
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+    }
+    #endif
 }
