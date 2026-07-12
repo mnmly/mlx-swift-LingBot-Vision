@@ -4,6 +4,8 @@ An [MLX Swift](https://github.com/ml-explore/mlx-swift) port of the
 [LingBot-Vision](https://github.com/Robbyant/lingbot-vision) self-supervised ViT
 backbones for dense spatial perception, running natively on Apple Silicon.
 
+📖 **[API documentation](https://mnmly.github.io/mlx-swift-LingBot-Vision/)** · 🤗 **[MLX weights (ViT-L/16)](https://huggingface.co/mnmly/lingbot-vision-vit-large-mlx)**
+
 LingBot-Vision is a DINOv2/DINOv3-lineage Vision Transformer with axial 2D RoPE,
 register/storage tokens, LayerScale, and a fused-QKV attention with a masked
 K-bias. This package reproduces the eval-time forward pass (CLS / storage /
@@ -97,6 +99,10 @@ input. The model I/O and compute live entirely in the library Session; the app
 `MainActor` hops, and `CGImage` display.
 
 ## Documentation
+
+The published site lives at
+**<https://mnmly.github.io/mlx-swift-LingBot-Vision/>** — auto-deployed from
+`main` by `.github/workflows/docs.yml`.
 
 Reference docs are generated with DocC. Because the package depends on mlx-swift
 (Metal), the docs build uses `xcodebuild docbuild` + `docc process-archive`

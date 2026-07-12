@@ -1,0 +1,59 @@
+# Builds the DocC site on push to main and deploys it to GitHub Pages.
+#
+# This package depends on mlx-swift (Metal), so docs are built with
+# `xcodebuild docbuild` via Scripts/build_docs.sh — NOT the swift-docc-plugin
+# (SwiftPM's Metal path fails on mlx-swift's kernels). The script emits a
+# GitHub Pages-ready static site under ./docs with a root redirect.
+#
+# ONE-TIME SETUP (already done via `gh api -X POST .../pages -f build_type=workflow`;
+# re-run if the deploy step 404s):
+#   gh api -X POST repos/mnmly/mlx-swift-LingBot-Vision/pages -f build_type=workflow
+
+name: Build and deploy DocC
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # macos-15 ships Xcode 16.x (Swift 6), which Package.swift's
+    # swift-tools-version:6.0 requires. Use the runner's default toolchain
+    # rather than hard-pinning an Xcode_XX.app path.
+    runs-on: macos-15
+    env:
+      HOSTING_BASE_PATH: mlx-swift-LingBot-Vision
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build docs
+        run: ./Scripts/build_docs.sh
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
