@@ -15,7 +15,7 @@ final class DemoModel {
     var imageURL: URL?
     var inputImage: CGImage?
     var pcaImage: CGImage?
-    var status = "Choose a converted model folder and an image, then Run."
+    var status = "Download a model or choose a folder, pick an image, then Run."
     var isRunning = false
     var useFloat16 = true
     var imageSize = defaultImageSize
@@ -23,6 +23,15 @@ final class DemoModel {
     /// Fraction (0…1) downloaded while pulling weights from Hugging Face.
     var downloadProgress: Double = 0
     var isDownloading = false
+
+    /// Category of the current status line, so the UI can pick an icon + color
+    /// (status / completion / error feedback).
+    enum StatusKind { case info, success, error }
+    var statusKind: StatusKind = .info
+
+    /// Bumped on every new PCA result so the view can replay its "materialize"
+    /// transition even when one result replaces another.
+    var resultToken = 0
 
     /// Cached session, reused across runs while the model folder + dtype are
     /// unchanged (avoids reloading ~1 GB of weights on every Run).
@@ -41,14 +50,19 @@ final class DemoModel {
         session = nil
         sessionKey = nil
         status = "Model: \(url.lastPathComponent)"
+        statusKind = .info
     }
 
     func setImage(_ url: URL) {
         imageURL = url
         inputImage = Self.loadCGImage(url)
-        status = inputImage == nil
-            ? "Could not read \(url.lastPathComponent)"
-            : "Image: \(url.lastPathComponent)"
+        if inputImage == nil {
+            status = "Could not read \(url.lastPathComponent)"
+            statusKind = .error
+        } else {
+            status = "Image: \(url.lastPathComponent)"
+            statusKind = .info
+        }
     }
 
     /// Download the published MLX weights from Hugging Face into a subfolder of
@@ -62,6 +76,7 @@ final class DemoModel {
         isDownloading = true
         downloadProgress = 0
         status = "Downloading model from Hugging Face…"
+        statusKind = .info
 
         let repo = Self.hubRepo
         let files = Self.hubFiles
@@ -97,8 +112,10 @@ final class DemoModel {
 
                 setModelDirectory(modelDir)
                 status = "Downloaded — ready. Choose an image and Run."
+                statusKind = .success
             } catch {
                 status = "Download failed: \(error.localizedDescription)"
+                statusKind = .error
             }
             isDownloading = false
         }
@@ -116,6 +133,7 @@ final class DemoModel {
         let key = "\(modelDirectory.path)|fp16=\(useFloat16)"
         let cached = (sessionKey == key) ? session : nil
         status = cached == nil ? "Loading model…" : "Running…"
+        statusKind = .info
 
         // Structured: this outer Task inherits @MainActor, so applying the
         // result to `self` below is race-free (no `weak self` juggling). The
@@ -146,11 +164,14 @@ final class DemoModel {
                 session = result.session
                 sessionKey = key
                 pcaImage = result.image
+                resultToken += 1
                 status = String(
                     format: "Done — %d×%d px in %.0f ms",
                     result.image.width, result.image.height, result.milliseconds)
+                statusKind = .success
             } catch {
                 status = "Error: \(error)"
+                statusKind = .error
             }
             isRunning = false
         }
