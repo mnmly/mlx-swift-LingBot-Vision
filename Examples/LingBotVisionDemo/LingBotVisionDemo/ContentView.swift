@@ -153,16 +153,29 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("\(Int(model.downloadProgress * 100))%")
+                Text(downloadDetail)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            ProgressView(value: model.downloadProgress)
-                .progressViewStyle(.linear)
+            // Indeterminate until the large file reports its size, so the bar
+            // animates ("working") from the first moment rather than sitting at 0%.
+            if model.downloadIndeterminate {
+                ProgressView().progressViewStyle(.linear)
+            } else {
+                ProgressView(value: model.downloadProgress).progressViewStyle(.linear)
+            }
         }
         .padding(12)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    private var downloadDetail: String {
+        let mb = Double(model.downloadedBytes) / 1_048_576
+        if model.downloadIndeterminate {
+            return mb > 0 ? String(format: "%.0f MB", mb) : "starting…"
+        }
+        return "\(Int(model.downloadProgress * 100))%"
     }
 
     // MARK: - Image panes

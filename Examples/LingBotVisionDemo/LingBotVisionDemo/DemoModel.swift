@@ -3,6 +3,11 @@ import Foundation
 import ImageIO
 import MLX
 import MLXLingBotVision
+import os
+
+/// Diagnostic log for the Hugging Face download flow — visible in Xcode's
+/// console and Console.app (filter subsystem "LingBotVisionDemo").
+private let downloadLog = Logger(subsystem: "LingBotVisionDemo", category: "download")
 
 /// SwiftUI-side driver for the demo. It owns only presentation concerns:
 /// file selection, the detached run `Task`, `autoreleasepool`, MainActor hops,
@@ -23,6 +28,10 @@ final class DemoModel {
     /// Fraction (0…1) downloaded while pulling weights from Hugging Face.
     var downloadProgress: Double = 0
     var isDownloading = false
+    /// True until the large file reports a total size — the bar shows an
+    /// indeterminate "working" state so activity is visible from the first byte.
+    var downloadIndeterminate = false
+    var downloadedBytes: Int64 = 0
 
     /// Category of the current status line, so the UI can pick an icon + color
     /// (status / completion / error feedback).
@@ -75,11 +84,14 @@ final class DemoModel {
         guard !isDownloading, !isRunning else { return }
         isDownloading = true
         downloadProgress = 0
+        downloadedBytes = 0
+        downloadIndeterminate = true
         status = "Downloading model from Hugging Face…"
         statusKind = .info
 
         let repo = Self.hubRepo
         let files = Self.hubFiles
+        downloadLog.info("start → \(parentDir.path, privacy: .public)")
 
         // Outer Task inherits @MainActor, so the writes to `self` after the
         // await are race-free. The network + disk I/O runs in a detached task
@@ -94,18 +106,26 @@ final class DemoModel {
                         "lingbot-vision-vit-large-mlx", isDirectory: true)
                     try FileManager.default.createDirectory(
                         at: dir, withIntermediateDirectories: true)
+                    downloadLog.info("dir ready → \(dir.path, privacy: .public)")
 
                     let base = "https://huggingface.co/\(repo)/resolve/main/"
                     for name in files {
                         guard let url = URL(string: base + name) else { throw URLError(.badURL) }
+                        downloadLog.info("GET \(name, privacy: .public)")
                         // config.json is tiny; drive the progress bar off the
                         // large model.safetensors only.
                         let reportsProgress = (name == "model.safetensors")
-                        try await downloadFile(from: url, to: dir.appendingPathComponent(name)) { frac in
-                            if reportsProgress {
-                                Task { @MainActor in self.downloadProgress = frac }
+                        try await downloadFile(from: url, to: dir.appendingPathComponent(name)) { written, total in
+                            guard reportsProgress else { return }
+                            Task { @MainActor in
+                                self.downloadedBytes = written
+                                if total > 0 {
+                                    self.downloadIndeterminate = false
+                                    self.downloadProgress = Double(written) / Double(total)
+                                }
                             }
                         }
+                        downloadLog.info("done \(name, privacy: .public)")
                     }
                     return dir
                 }.value
@@ -113,9 +133,11 @@ final class DemoModel {
                 setModelDirectory(modelDir)
                 status = "Downloaded — ready. Choose an image and Run."
                 statusKind = .success
+                downloadLog.info("complete")
             } catch {
                 status = "Download failed: \(error.localizedDescription)"
                 statusKind = .error
+                downloadLog.error("failed: \(error.localizedDescription, privacy: .public)")
             }
             isDownloading = false
         }
@@ -212,25 +234,26 @@ private struct InferResult: @unchecked Sendable {
 /// `model.safetensors` never has to fit in RAM.
 private func downloadFile(
     from url: URL, to dest: URL,
-    onProgress: @escaping @Sendable (Double) -> Void
+    onProgress: @escaping @Sendable (_ written: Int64, _ total: Int64) -> Void
 ) async throws {
     let delegate = DownloadProgress(onProgress)
     let (tempURL, response) = try await URLSession.shared.download(
         for: URLRequest(url: url), delegate: delegate)
     if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-        throw URLError(.badServerResponse)
+        throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"])
     }
     try? FileManager.default.removeItem(at: dest)
     try FileManager.default.moveItem(at: tempURL, to: dest)
 }
 
-/// Task-scoped delegate that forwards download progress. `@unchecked Sendable`:
-/// its only stored property is an immutable `@Sendable` closure, and URLSession
-/// delivers the callback on its own serial delegate queue.
+/// Task-scoped delegate that forwards download progress as (bytesWritten,
+/// totalExpected); `total` is `-1` when the server doesn't send a length.
+/// `@unchecked Sendable`: its only stored property is an immutable `@Sendable`
+/// closure, and URLSession delivers the callback on its own serial queue.
 private final class DownloadProgress: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    private let onProgress: @Sendable (Double) -> Void
+    private let onProgress: @Sendable (Int64, Int64) -> Void
 
-    init(_ onProgress: @escaping @Sendable (Double) -> Void) {
+    init(_ onProgress: @escaping @Sendable (Int64, Int64) -> Void) {
         self.onProgress = onProgress
     }
 
@@ -239,8 +262,7 @@ private final class DownloadProgress: NSObject, URLSessionDownloadDelegate, @unc
         didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
         totalBytesExpectedToWrite: Int64
     ) {
-        guard totalBytesExpectedToWrite > 0 else { return }
-        onProgress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+        onProgress(totalBytesWritten, totalBytesExpectedToWrite)
     }
 
     // Required by the protocol; the async `download(for:)` returns the file URL,
